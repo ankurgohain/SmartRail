@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Single-Line AUTO — Upload CSV • Speeds • Hold & Station Dwell • SIM SPEED (v3 full)</title>
+<style>
+  body { margin:12px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+  .layout { display:grid; grid-template-columns: 46% 54%; grid-template-rows: auto auto 1fr; gap:12px; }
+  .panel { border:1px solid #e5e7eb; border-radius:12px; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  .pad { padding:10px; }
+  h2 { margin:6px 0 10px 0; font-size:18px; }
+  .legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:6px; }
+  .chip { display:inline-flex; align-items:center; gap:6px; }
+  .dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
+  #snake { width:100%; height:720px; }
+  #chart { width:100%; height:260px; }
+  .log { height:220px; overflow:auto; background:#0f172a; color:#e5e7eb; padding:8px; font-size:13px; border-radius:10px; white-space:pre-wrap;}
+  .controls button { padding:6px 10px; border-radius:10px; border:1px solid #cbd5e1; background:#f8fafc; cursor:pointer; }
+  .controls button:hover { background:#eef2ff; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .pill { padding:2px 8px; border-radius:999px; background:#f1f5f9; font-size:12px; }
+  .downloads a { margin-right:10px; } input[type="number"]{ width:70px; } label.small{ font-size:12px; color:#334155; }
+</style>
+</head>
+<body>
+<h1>Railway Live Demo — Single Line (AUTO) • Upload CSV • Set Speeds • Hold & Station Dwell • <em>Simulation Speed</em> (v3 full)</h1>
+
+<div class="layout">
+  <div class="panel" style="grid-row: 1 / span 3;">
+    <div class="pad">
+      <div class="row" style="gap:16px;">
+        <div><div><label class="small">UP CSV</label></div><input type="file" id="upCsv" accept=".csv"></div>
+        <div><div><label class="small">DOWN CSV</label></div><input type="file" id="downCsv" accept=".csv"></div>
+        <div><div><label class="small">Mode</label></div>
+          <select id="timeMode">
+            <option value="csv">Use timetable times from CSV</option>
+            <option value="speed">Compute inter-station times from speeds</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:8px;">
+        <span class="pill">Headway</span><input id="headway" type="number" value="2" step="0.1" min="0">
+        <span class="pill">Min Block</span><input id="minblock" type="number" value="0.3" step="0.1" min="0">
+        <span class="pill">Hold dwell (min)</span><input id="holdDwell" type="number" value="2" step="0.5" min="0">
+        <span class="pill">Station dwell (min)</span><input id="stationDwell" type="number" value="1" step="0.5" min="0">
+        <label class="small"><input type="checkbox" id="passengerStopsAll" checked> Passenger stops at every station</label>
+      </div>
+
+      <div class="row" style="margin-top:8px;">
+        <span class="pill">Class Speeds (km/h)</span>
+        <label class="small">Passenger</label><input id="spdPassenger" type="number" value="20">
+        <label class="small">Express</label><input id="spdExpress" type="number" value="30">
+        <label class="small">Superfast</label><input id="spdSuperfast" type="number" value="40">
+        <label class="small">Shatabdi</label><input id="spdShatabdi" type="number" value="50">
+      </div>
+
+      <div class="row" style="margin-top:8px;">
+        <span class="pill">Sim: minutes / tick</span><input id="minsPerTick" type="number" value="0.5" step="0.1" min="0.1">
+        <span class="pill">Tick every (ms)</span><input id="tickMs" type="number" value="150" step="10" min="16">
+        <button id="applySpeed" class="controls">Apply Speed</button>
+      </div>
+
+      <div class="legend" style="margin-top:8px;">
+        <span class="chip"><span class="dot" style="background:#1f77b4"></span>Passenger</span>
+        <span class="chip"><span class="dot" style="background:#ff7f0e"></span>Express</span>
+        <span class="chip"><span class="dot" style="background:#2ca02c"></span>Superfast</span>
+        <span class="chip"><span class="dot" style="background:#d62728"></span>Shatabdi</span>
+      </div>
+
+      <div class="row" style="margin-top:8px;">
+        <div class="controls">
+          <button id="load">Load CSV(s)</button>
+          <button id="start">Start</button>
+          <button id="pause">Pause</button>
+          <button id="reset">Reset</button>
+          <span class="pill">Time: <span id="t">0</span> min</span>
+        </div>
+      </div>
+    </div>
+
+    <canvas id="snake"></canvas>
+    <div class="pad"><div id="downloads" class="downloads"></div></div>
+  </div>
+
+  <div class="panel"><div class="pad"><h2>Final Time–Distance Chart</h2><canvas id="chart"></canvas></div></div>
+  <div class="panel"><div class="pad"><h2>Controller ↔ Station Master Dialogue</h2><div class="log" id="dialogLog"></div></div></div>
+  <div class="panel"><div class="pad"><h2>Train Operations Log</h2><div class="log" id="trainLog"></div></div></div>
+</div>
+
+<script>
+const COLORS = { "Passenger":"#1f77b4", "Express":"#ff7f0e", "Superfast":"#2ca02c", "Shatabdi":"#d62728" };
+const PRIORITY = { "Shatabdi":4, "Superfast":3, "Express":2, "Passenger":1 };
+const stations = Array.from({length:14}, (_,i)=>`S${i+1}`);
+const loopStations = new Set(["S2","S4","S7","S10","S12","S13"]);
+const bigTerminals = new Set(["S1","S14"]);
+
+let trains = [];
+let minsPerTick = 0.5;
+let tickMs = 150;
+
+function normalizeClassLabel(label){
+  if(!label) return "Passenger";
+  const s = String(label).toLowerCase().replace(/[^a-z]/g,'');
+  if(s.startsWith('pass') || s==='p' || s==='passenger') return 'Passenger';
+  if(s.startsWith('exp') || s==='e' || s==='express') return 'Express';
+  if(s.includes('sf') || s.includes('superfast') || s.includes('super')) return 'Superfast';
+  if(s.includes('shat') || s.includes('shatabdi')) return 'Shatabdi';
+  return 'Passenger';
+}
+function normalize(list){ return list.map(t => ({...t, cls: normalizeClassLabel(t.cls)})); }
+
+document.getElementById('applySpeed').onclick = () => {
+  minsPerTick = Math.max(0.1, +document.getElementById('minsPerTick').value || 1);
+  tickMs = Math.max(16, +document.getElementById('tickMs').value || 60);
+  if(timer){ clearInterval(timer); timer = setInterval(step, tickMs); }
+};
+
+document.getElementById('load').onclick = async () => {
+  const upFile = document.getElementById('upCsv').files[0];
+  const dnFile = document.getElementById('downCsv').files[0];
+  if(!upFile || !dnFile){ alert('Please select both UP and DOWN CSVs.'); return; }
+  const upText = await upFile.text(); const dnText = await dnFile.text();
+  const up = parseCsv(upText, "UP"); const dn = parseCsv(dnText, "DOWN");
+  const mode = document.getElementById('timeMode').value;
+  if(mode === 'speed'){
+    const speeds = {
+      "Passenger": +document.getElementById('spdPassenger').value || 60,
+      "Express": +document.getElementById('spdExpress').value || 90,
+      "Superfast": +document.getElementById('spdSuperfast').value || 110,
+      "Shatabdi": +document.getElementById('spdShatabdi').value || 160
+    };
+    trains = bakeBySpeed(normalize([...up, ...dn]), speeds);
+  } else {
+    trains = normalize([...up, ...dn]);
+  }
+  reset(); alert('CSV loaded.');
+};
+
+function parseCsv(text, direction){
+  const rows = text.trim().split(/\r?\n/).map(r => r.split(/,|;|\t/));
+  const stationCol = 0; const classRow = rows[0].slice(1); const trainCols = rows[0].length - 1;
+  const out=[];
+  for(let c=0;c<trainCols;c++){
+    const id = rows[0][c+1].trim() || `T${c+1}`;
+    const cls = (classRow[c]||'').trim();
+    const t = {id, cls, dir:direction, times:{}};
+    for(let r=1;r<rows.length;r++){
+      const station = (rows[r][stationCol]||'').replace(/\s+/g,'');
+      const val = (rows[r][c+1]||'').trim(); const m = /^([0-2]?\d):([0-5]\d)$/.exec(val);
+      if(station && m){ let minutes=(+m[1])*60 + (+m[2]); t.times[station]=minutes; }
+    } out.push(t);
+  } return out;
+}
+
+function bakeBySpeed(list, speeds){
+  const res = JSON.parse(JSON.stringify(list));
+  for(const tr of res){
+    const order = tr.dir==="UP" ? stations : [...stations].reverse();
+    let startTime = Math.min(...Object.values(tr.times||{})); if(!isFinite(startTime)) startTime = 0;
+    const mps = 60/Math.max(1, speeds[tr.cls]||60);
+    tr.times={}; for(let i=0;i<order.length;i++){ tr.times[order[i]] = Math.round(startTime + i*mps); }
+  } return res;
+}
+
+let t=0, timer=null, finished=false;
+let occSingle=new Map(), occDir=new Map();
+let dialogLog=[], trainLog=[]; let segments=[];
+let lastFinishByTrain=new Map();
+
+function buildSegments(list){
+  const segs=[];
+  for(const tr of list){
+    const order = tr.dir==="UP"? stations : [...stations].reverse();
+    for(let i=0;i<order.length-1;i++){
+      const a=order[i], b=order[i+1];
+      if(tr.times[a]!=null && tr.times[b]!=null){
+        segs.push({ train:tr.id, cls:tr.cls, dir:tr.dir, a, b,
+                    depart:tr.times[a], arrive:tr.times[b],
+                    state:"waiting", next_check:tr.times[a],
+                    hold_at:null, hold_until:null, sched_wait:false });
+      }
+    }
+  } return segs;
+}
+function uKey(a,b){ return a<b?`${a}-${b}`:`${b}-${a}`; }
+function dKey(a,b){ return `${a}-${b}`; }
+function freeAfter(map, key){ const arr=map.get(key)||[]; let latest=0; for(const it of arr) if(it>latest) latest=it; return latest; }
+function reserve(map, key, until){ if(!map.has(key)) map.set(key,[]); map.get(key).push(until); }
+function logD(s){ dialogLog.push(`[${fmtClock(t)}] ${s}`); const d=document.getElementById('dialogLog'); d.textContent=dialogLog.join("\n"); d.scrollTop=d.scrollHeight; }
+function logT(s){ trainLog.push(`[${fmtClock(t)}] ${s}`); const d=document.getElementById('trainLog'); d.textContent=trainLog.join("\n"); d.scrollTop=d.scrollHeight; }
+function fmtClock(total){
+  const m = Math.round(total); const hh = Math.floor(m/60)%24; const mm = m%60;
+  return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
+}
+
+function step(){
+  const headway=+document.getElementById('headway').value||1;
+  const minblock=+document.getElementById('minblock').value||0.3;
+  const minHold=+document.getElementById('holdDwell').value||0;
+  const stationDwell=+document.getElementById('stationDwell').value||0;
+  const passengerStopsAll = document.getElementById('passengerStopsAll').checked;
+
+  for(const s of segments){
+    if(s.state==="running" && t>=s.finish){
+      s.state="done"; lastFinishByTrain.set(s.train, s.finish);
+    }
+  }
+
+  const cand = segments.filter(s=> s.state==="waiting" && s.next_check<=t);
+  const wants = new Map();
+  for(const s of cand){
+    const uk=uKey(s.a,s.b), dk=dKey(s.a,s.b);
+    const dirFree = freeAfter(occDir, dk);
+    const phyFree = freeAfter(occSingle, uk);
+    const lastFinish = lastFinishByTrain.get(s.train) || -Infinity;
+
+    let sched = 0;
+    if(passengerStopsAll && s.cls==='Passenger'){
+      sched = stationDwell;
+      const schedEarliest = lastFinish + sched;
+      if(schedEarliest > t && !s.sched_wait){
+        s.sched_wait = true;
+        logT(`[SCHED] ${s.train} scheduled stop at ${s.a} for ${sched.toFixed(1)} min.`);
+      }
+    }
+
+    const earliest = Math.max(t, dirFree + headway, phyFree + headway, s.hold_until||0, lastFinish + sched);
+    s.earliest = earliest; s.run=Math.max(minblock, s.arrive - s.depart);
+    if(earliest<=t){ if(!wants.has(uk)) wants.set(uk,[]); wants.get(uk).push(s); } else { s.next_check = earliest; }
+  }
+
+  const ready=[];
+  wants.forEach((arr,uk)=>{
+    if(arr.length===1) ready.push(arr[0]);
+    else {
+      arr.sort((x,y)=> PRIORITY[y.cls]-PRIORITY[x.cls]); const chosen=arr[0]; ready.push(chosen);
+      const releaseTime = Math.max(freeAfter(occSingle, uk), freeAfter(occDir, dKey(chosen.a,chosen.b))) + headway;
+      for(const hold of arr.slice(1)){
+        hold.hold_at = hold.a; hold.hold_until = Math.max(releaseTime, t + minHold); hold.next_check = hold.hold_until;
+        logD(`[HOLD] Crossing on ${uk}. AUTO precedence to ${chosen.train} (${chosen.cls}). ${hold.train} held at ${hold.hold_at} loop until ${fmtClock(hold.hold_until)}.`);
+        logT(`[HOLD] ${hold.train} waiting at ${hold.hold_at} (loop).`);
+      }
+    }
+  });
+
+  for(const s of ready){
+    const dk=dKey(s.a,s.b), uk=uKey(s.a,s.b);
+    s.state="running"; s.start=t; s.finish=t+s.run; s.hold_at=null; s.hold_until=null; s.sched_wait=false;
+    reserve(occDir, dk, s.finish); reserve(occSingle, uk, s.finish);
+    logD(`SM ${s.a} → Controller: Request ${s.a}→${s.b} for ${s.train}. CLEARED.`);
+    logT(`${s.train} departed ${s.a}, next ${s.b}.`);
+  }
+
+  finished = segments.every(x=>x.state==="done");
+  if(finished){ pause(); finalize(); }
+  t += minsPerTick; document.getElementById('t').textContent=t.toFixed(1);
+  renderSnake();
+}
+
+function start(){ if(!timer){ timer=setInterval(step, tickMs); } }
+function pause(){ if(timer){ clearInterval(timer); timer=null; } }
+function reset(){
+  pause(); occSingle.clear(); occDir.clear(); dialogLog=[]; trainLog=[];
+  lastFinishByTrain.clear();
+  segments=buildSegments(trains);
+  t = Math.min(...segments.map(s=>s.depart)) - 5; if(!isFinite(t)) t=0;
+  document.getElementById('t').textContent=t.toFixed(1);
+  renderSnake();
+}
+
+document.getElementById('start').onclick=start; document.getElementById('pause').onclick=pause; document.getElementById('reset').onclick=reset;
+
+function snakePositions(){ const cols=[0.22, 0.48]; const pos={}; for(let i=0;i<stations.length;i++){ const y=i/(stations.length-1); const x=cols[i%2]; pos[stations[i]]={x,y}; } return pos; }
+function renderSnake(){
+  const canvas=document.getElementById('snake'); const ctx=canvas.getContext('2d');
+  const DPR=window.devicePixelRatio||1; const W=canvas.clientWidth*DPR, H=canvas.clientHeight*DPR;
+  canvas.width=W; canvas.height=H; ctx.clearRect(0,0,W,H);
+  const pos=snakePositions();
+  ctx.strokeStyle="#b91c1c"; ctx.lineWidth=3*DPR; ctx.lineJoin="round";
+  ctx.beginPath(); ctx.moveTo(W*pos[stations[0]].x, H*pos[stations[0]].y);
+  for(let i=1;i<stations.length;i++){ const p=pos[stations[i]]; ctx.lineTo(W*p.x, H*p.y); } ctx.stroke();
+  for(const s of stations){ const p=pos[s]; const x=W*p.x, y=H*p.y;
+    ctx.strokeStyle="#1d4ed8"; ctx.lineWidth=4*DPR; ctx.beginPath(); ctx.moveTo(x-W*0.02,y); ctx.lineTo(x+W*0.02,y); ctx.stroke();
+    const loop = loopStations.has(s) || bigTerminals.has(s);
+    if(loop){
+      ctx.lineWidth=3*DPR;
+      ctx.beginPath(); ctx.moveTo(x-W*0.03, y-H*0.02); ctx.lineTo(x-W*0.01, y-H*0.02); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x-W*0.03, y+H*0.02); ctx.lineTo(x-W*0.01, y+H*0.02); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x+W*0.01, y-H*0.02); ctx.lineTo(x+W*0.03, y-H*0.02); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x+W*0.01, y+H*0.02); ctx.lineTo(x+W*0.03, y+H*0.02); ctx.stroke();
+    }
+    ctx.fillStyle="#0f172a"; ctx.font=`${12*DPR}px sans-serif`; ctx.textAlign="center"; ctx.textBaseline="bottom"; ctx.fillText(s, x, y-4*DPR);
+  }
+  const blink = (Math.floor(Date.now()/500)%2)===0;
+  const drawn = new Set();
+  for(const s of segments){
+    const tr = trains.find(x=>x.id===s.train) || {cls:"Passenger"};
+    const color = COLORS[tr.cls]||"#000";
+    if(s.state==="running" && t>=s.start && t<=s.finish){
+      const pa=pos[s.a], pb=pos[s.b]; const frac=(t - s.start)/Math.max(0.0001,(s.finish - s.start));
+      const x=(pa.x+(pb.x-pa.x)*frac)*W, y=(pa.y+(pb.y-pa.y)*frac)*H;
+      ctx.fillStyle=color; ctx.beginPath(); ctx.arc(x,y,5*DPR,0,Math.PI*2); ctx.fill();
+      if(!drawn.has(s.train)){ ctx.fillStyle=color; ctx.font=`${11*DPR}px sans-serif`; ctx.textAlign="left"; ctx.textBaseline="middle"; ctx.fillText(s.train, x+8*DPR, y); drawn.add(s.train); }
+    } else if(s.state==="waiting" && s.hold_at){
+      // controller HOLD: blink on loop
+      const p=pos[s.hold_at]; const baseX=W*p.x, baseY=H*p.y;
+      const lx = s.dir==="UP" ? baseX-W*0.02 : baseX+W*0.02; const ly = baseY - H*0.02;
+      if(blink){ ctx.fillStyle=color; ctx.beginPath(); ctx.arc(lx,ly,6*DPR,0,Math.PI*2); ctx.fill(); }
+      if(!drawn.has(s.train)){ ctx.fillStyle=color; ctx.font=`${11*DPR}px sans-serif`; ctx.textAlign=(s.dir==="UP"?"right":"left"); ctx.textBaseline="middle"; ctx.fillText(s.train, lx + (s.dir==="UP"? -8*DPR:8*DPR), ly); drawn.add(s.train); }
+    } else if(s.state==="waiting" && s.sched_wait){
+      // scheduled halt: solid dot on main line
+      const p=pos[s.a]; const baseX=W*p.x, baseY=H*p.y;
+      const sx = baseX; const sy = baseY;
+      ctx.fillStyle=color; ctx.beginPath(); ctx.arc(sx, sy, 4*DPR, 0, Math.PI*2); ctx.fill();
+      if(!drawn.has(s.train)){ ctx.fillStyle=color; ctx.font=`${11*DPR}px sans-serif`; ctx.textAlign="left"; ctx.textBaseline="middle"; ctx.fillText(s.train, sx+8*DPR, sy); drawn.add(s.train); }
+    }
+  }
+}
+
+function drawFinalChart(){
+  const c=document.getElementById('chart'); const ctx=c.getContext('2d');
+  const DPR=window.devicePixelRatio||1; const W=c.clientWidth*DPR, H=c.clientHeight*DPR;
+  c.width=W; c.height=H; ctx.clearRect(0,0,W,H);
+  const left=50, right=20, top=20, bottom=20;
+  const h=H-top-bottom, w=W-left-right;
+  const yOf=s=> top + (stations.indexOf(s)/(stations.length-1))*h;
+  let tmin=Infinity, tmax=-Infinity;
+  for(const tr of trains) for(const m of Object.values(tr.times||{})){ tmin=Math.min(tmin,m); tmax=Math.max(tmax,m); }
+  if(!isFinite(tmin)||!isFinite(tmax)){ tmin=0; tmax=1; }
+  const xOf=m=> left + ((m - tmin)/(tmax - tmin))*w;
+  ctx.strokeStyle="#eee"; ctx.lineWidth=1;
+  for(const s of stations){ const y=yOf(s); ctx.beginPath(); ctx.moveTo(left,y); ctx.lineTo(W-right,y); ctx.stroke(); ctx.fillStyle="#475569"; ctx.textAlign="right"; ctx.textBaseline="middle"; ctx.font=`${12*DPR}px sans-serif`; ctx.fillText(s, left-6,y); }
+  for(let m=Math.ceil(tmin/10)*10; m<=tmax; m+=10){ const x=xOf(m); ctx.beginPath(); ctx.moveTo(x,top); ctx.lineTo(x,H-bottom); ctx.stroke(); }
+  for(const tr of trains){
+    const color=COLORS[tr.cls]||"#000"; ctx.strokeStyle=color; ctx.lineWidth=2;
+    const order = tr.dir==="UP"? stations : [...stations].reverse();
+    ctx.beginPath(); let started=false;
+    for(const s of order){ if(tr.times[s]!=null){ const x=xOf(tr.times[s]), y=yOf(s); if(!started){ ctx.moveTo(x,y); started=true; } else { ctx.lineTo(x,y); } } }
+    ctx.stroke();
+  }
+}
+
+function finalize(){
+  drawFinalChart();
+  const downloads = document.getElementById('downloads'); downloads.innerHTML="";
+  function addLink(blob, name, label){ const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=name; a.textContent=label; a.style.marginRight='10px'; downloads.appendChild(a); }
+  addLink(new Blob([dialogLog.join('\n')], {type:'text/plain'}), 'controller_stationmaster_log.txt', 'Download Controller–SM Log');
+  addLink(new Blob([trainLog.join('\n')], {type:'text/plain'}), 'train_log.txt', 'Download Train Log');
+  const c=document.getElementById('chart'); c.toBlob(b=> addLink(b, 'final_chart.png', 'Download Final Chart'));
+}
+</script>
+</body>
+</html>
